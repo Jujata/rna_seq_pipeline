@@ -29,7 +29,7 @@ def parseArguments():
     return (args)
 
 
-def create_main_folder_with_id(input_file):
+def create_main_folder_with_id(input1):
   """
   Function to extract sample ID and create necessary folders for analysis of FASTQ files (.fastq.gz).
 
@@ -38,7 +38,7 @@ def create_main_folder_with_id(input_file):
   """
 
   # Extract ID samples and create a new folder with its name
-  sample_id = re.search(r"([^_]+)(?=\.fastq\.gz))", os.path.basename(input_file)).group(1)
+  sample_id = re.search(r"([^_]+)(?=\.fastq\.gz))", os.path.basename(input1)).group(1)
   main_folder = sample_id
   os.makedirs(main_folder, exist_ok=True)
 
