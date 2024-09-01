@@ -1,0 +1,602 @@
+---
+title: "Zebrafish_pipeline"
+output: html_document
+date: "2024-09-01"
+---
+
+# RNA-Seq analysis for zebrafish samples.
+
+In this code, we are going to perform an RNA-seq analysis from counts obtained by HTSEq-Counts.
+
+First of all, we will put the data into R using the function read.csv. As we know, the last lines in this file contains irrelevant information for the analysis, so we have to remove them.
+
+```{r}
+
+sample_zebrafish_control1 <- read.csv("counts_rep1_control.tsv", header = FALSE, sep="\t")
+sample_zebrafish_control1 <- sample_zebrafish_control1[-c(32521:32525), ]
+sample_zebrafish_control2 <- read.csv("counts_rep2_control.tsv", header = FALSE, sep="\t")
+sample_zebrafish_control2 <- sample_zebrafish_control2[-c(32521:32525), ]
+sample_zebrafish_control3 <- read.csv("counts_rep3_control.tsv", header = FALSE, sep="\t")
+sample_zebrafish_control3 <- sample_zebrafish_control3[-c(32521:32525), ]
+
+sample_zebrafish_treatment1 <- read.csv("counts_rep1_treatment.tsv", header = FALSE, sep="\t")
+sample_zebrafish_treatment1 <- sample_zebrafish_treatment1[-c(32521:32525), ]
+sample_zebrafish_treatment2 <- read.csv("counts_rep2.treatment.tsv", header = FALSE, sep="\t")
+sample_zebrafish_treatment2 <- sample_zebrafish_treatment2[-c(32521:32525), ]
+sample_zebrafish_treatment3 <- read.csv("counts_rep3_treatment.tsv", header = FALSE, sep="\t")
+sample_zebrafish_treatment3 <- sample_zebrafish_treatment3[-c(32521:32525), ]
+```
+
+Then, we don't have a header, so we will rename it. First column, which contains the ID, ENSDARG, it will be name as 'Genes' and the second, which contains the counts, 'Counts'.
+
+```{r}
+colnames(sample_zebrafish_control1) <- c('Genes', 'Counts')
+colnames(sample_zebrafish_control2) <- c('Genes', 'Counts')
+colnames(sample_zebrafish_control3) <- c('Genes', 'Counts')
+
+colnames(sample_zebrafish_treatment1) <- c('Genes', 'Counts')
+colnames(sample_zebrafish_treatment2) <- c('Genes', 'Counts')
+colnames(sample_zebrafish_treatment3) <- c('Genes', 'Counts')
+```
+
+The output generates a list variable. To proceed with the analysis, we need to convert this list into a data frame.
+
+```{r}
+data_frame_control1 <-  as.data.frame(sample_zebrafish_control1)
+data_frame_control2 <-  as.data.frame(sample_zebrafish_control2)
+data_frame_control3 <-  as.data.frame(sample_zebrafish_control3)
+
+data_frame_treatment1 <-  as.data.frame(sample_zebrafish_treatment1)
+data_frame_treatment2 <-  as.data.frame(sample_zebrafish_treatment2)
+data_frame_treatment3 <-  as.data.frame(sample_zebrafish_treatment3)
+```
+
+For each sample, we will add a new column indicating the sample type and number, such as 'control1,' 'treatment1,' etc**.**
+
+```{r}
+control1 <- data_frame_control1 %>% mutate(sample =  "control1")
+control2 <- data_frame_control2 %>% mutate(sample = "control2")
+control3 <- data_frame_control3 %>% mutate(sample = "control3")
+
+treatment1 <- data_frame_treatment1 %>% mutate(sample = "treatment1")
+treatment2 <- data_frame_treatment2 %>% mutate(sample = "treatment2")
+treatment3 <- data_frame_treatment3 %>% mutate(sample = "treatment3")
+```
+
+Finally, we will merge all the files into a single data frame and then, transform the output into a wider format for better understanding. Additionally, we will replace the first row's names with the corresponding sample IDs for future reference.
+
+```{r}
+complete <-  bind_rows(control1, control2, control3, treatment1, treatment2, treatment3)
+
+complete <-  complete %>% pivot_wider(names_from = sample, values_from = Counts)
+
+complete <- complete %>%column_to_rownames("Genes")
+```
+
+Next, we will define our groups of interest. In this case, we have 2 groups: control and treatment, each with 3 replicates. In addition, we will transform this object to data frame.
+
+```{r}
+group <- c("control", "treatment")
+group <- factor(rep(group, each = 3), levels = group)
+
+group_frame <- as.data.frame(group)
+```
+
+We have to calculate cpm values and keep those which has more than 3 counts.
+
+```{r}
+
+cpm_values <- cpm(complete)
+keep <- rowSums(cpm_values > 1) >= 3
+complete_filtered <- complete[keep,]
+```
+
+We are now ready to create a DESeqDataSet object and filter out low-expression genes.
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = complete_filtered,
+                              colData = group_frame,
+                              design = ~group)
+
+dds <- dds[rowSums(counts(dds)) > 1, ]
+```
+
+After creating the DESeqDataSet, we can proceed with several key analysis steps: estimating size factors, estimating dispersion parameters and fitting a generalized linear model using the DESeq function and results. Then, we will create another column to identify upregulated and downregulated genes.
+
+```{r}
+dds <- DESeq(dds)
+res <- results(dds, contrast = c("group", "treatment", "control"))
+
+res$DE <- ifelse(res$log2FoldChange > 1 & res$padj < 0.05, "Upregulated",
+                 ifelse(res$log2FoldChange < -1 & res$padj < 0.05, "Downregulated", "Not Significant"))
+
+```
+
+To determine the names and descriptions of the genes, we will employ a dataset provided by Ensembl. Then, we will store this information in 'res' variable.
+
+```{r}
+ensembl <- useMart("ensembl", dataset = "drerio_gene_ensembl")
+info_genes <- getBM(attributes = c("ensembl_gene_id", "external_gene_name", "description"),
+                    filters = "ensembl_gene_id",
+                    values = rownames(res),
+                    mart = ensembl)
+
+res$external_gene_name <- info_genes$external_gene_name[match(rownames(res), info_genes$ensembl_gene_id)]
+res$description <- info_genes$description[match(rownames(res), info_genes$ensembl_gene_id)]
+res_df <- as.data.frame(res)
+```
+
+```{r}
+gene_counts <- table(res$DE)
+print(gene_counts)
+```
+
+Now we can see how our genes are distributed.
+
+## Graphic results
+
+Now we can create graphics to interpret the results.
+
+### MA Plot
+
+An MA plot visualizes differential expression analysis. First, we shrink the log fold change (LFC) estimates to reduce noise. Then, we generate the plot, which displays log2 fold changes on the y-axis and mean normalized counts on the x-axis, helping to identify significant gene expression changes
+
+```{r}
+resLFC <- lfcShrink(dds, coef = 2, type = 'apeglm')
+plotMA(resLFC, cex=0.7, ylim=c(-10,10))
+```
+
+### Dispersion
+
+Dispersion plot helps assess the accuracy of dispersion estimates, ensuring that the variance structure of the data is appropriately modeled for differential expression analysis.
+
+```{r}
+
+plotDispEsts(dds, main='dispersion plot')
+```
+
+### PCA
+
+To identify the distribution of the samples, we will perform a Principal Component Analysis (PCA). We will first stabilize the variance of the data, then calculate the PCA, create a data frame with the relevant results, and finally round the results to desired precision
+
+```{r}
+
+vsd <- vst(dds, blind = FALSE)
+
+pca_result <- prcomp(t(assay(vsd)))
+
+pca_data <- data.frame(
+  PC1 = pca_result$x[, 1],
+  PC2 = pca_result$x[, 2],
+  Sample = colnames(dds),
+  Group = colData(dds)$group
+)
+
+
+var_explained <- (pca_result$sdev^2)/sum(pca_result$sdev^2)*100
+pc1_var <- round(var_explained[1], 1)
+pc2_var <- round(var_explained[2], 1)
+
+
+```
+
+To visualize the results of the PCA calculated above, we will create a scatter plot using ggplot2.
+
+```{r}
+
+pca_plot <- ggplot(pca_data, aes(x = PC1, y = PC2, color = Group, label = Sample)) +
+  geom_point(size = 3) +
+  geom_text_repel(size = 4, box.padding = 0.8, point.padding = 0.5, max.overlaps = Inf) +
+  xlab(paste0("PC1: ", pc1_var, "% variance")) +
+  ylab(paste0("PC2: ", pc2_var, "% variance")) +
+  ggtitle("PCA of Zebrafish Samples") +
+  scale_color_manual(values = c("control" = "lightblue", "treatment" = "orchid")) + 
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    legend.title = element_blank(),
+    legend.position = "bottom",
+    axis.title = element_text(face = "bold")
+  )
+
+print(pca_plot)
+```
+
+### Volcano Plot
+
+VolcanoPlots plots the log fold change of gene expression (x-axis) against the significance of the difference (y-axis, typically represented by the padj). This allows for quick identification of genes with both large fold changes and statistical significance.
+
+To create the volcano plot, we had to first, filter na data, eliminate. Then, we will take the values from log2FoldChange and padj.
+
+```{r}
+
+data_filtered <- res_df[is.finite(res_df$log2FoldChange) & is.finite(res_df$padj), ]
+
+min_non_zero_padj <- min(data_filtered$padj[data_filtered$padj > 0], na.rm = TRUE)
+data_filtered$padj[data_filtered$padj == 0] <- min_non_zero_padj
+
+
+
+ggplot(data_filtered, aes(x = log2FoldChange, y = -log10(padj), col = DE)) +
+  geom_point(size = 0.2) +
+  geom_text_repel(data = subset(data_filtered, DE %in% c("Upregulated", "Downregulated")), 
+                  aes(label = external_gene_name), 
+                  size = 3, color = "black", max.overlaps = 20, show.legend = FALSE) +
+  theme_minimal() +
+  scale_color_manual(values = c("Upregulated" = "pink", "Downregulated" = "lightblue", "Not Significant" = "grey")) +
+  labs(color = "Differential Expression",
+       x = "log2 Fold Change",
+       y = "-log10 Adjusted p-value") +
+  theme(legend.position = "bottom")
+```
+
+### Heatmap
+
+First, we have to calculate z_score because it takes the normalized counts and transforms them so that each gene's expression values are centered around 0 and have a standard deviation of 1. This makes it easier to compare gene expression levels across different samples and identify genes with significantly different expression patterns
+
+```{r}
+
+normalized_counts <- counts(dds, normalized=TRUE)
+z_score <- t(scale(t(normalized_counts)))
+
+column_annotation <- data.frame(Group = group)
+rownames(column_annotation) <- colnames(z_score)
+
+pheatmap(z_score,
+         annotation_col = column_annotation,
+         show_rownames = FALSE,  # No mostrar nombres de genes si son muchos
+         cluster_cols = FALSE,   # No agrupar columnas
+         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(100),
+         main = "Heatmap of Differentially Expressed Genes",
+         fontsize = 8)
+
+```
+
+```{r}
+
+top_up <- res[order(res$log2FoldChange, decreasing = TRUE), ]
+top_down <- res[order(res$log2FoldChange), ]
+
+top_25_up <- rownames(top_up)[1:25]
+top_25_down <- rownames(top_down)[1:25]
+
+top_50_genes <- c(top_25_up, top_25_down)
+
+normalized_counts_top50 <- normalized_counts[top_50_genes, ]
+
+z_scores_top50 <- t(scale(t(normalized_counts_top50)))
+
+external_names <- res$external_gene_name[match(rownames(z_scores_top50), rownames(res))]
+
+rownames(z_scores_top50) <- external_names
+
+column_annotation <- data.frame(Group = group)
+rownames(column_annotation) <- colnames(z_scores_top50)
+
+
+
+pheatmap(z_scores_top50,
+         annotation_col = column_annotation,
+         show_rownames = TRUE,
+         cluster_rows = TRUE, 
+         cluster_cols = TRUE,   
+         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(100),
+         main = "Heatmap of Top 50 Differentially Expressed Genes\n(25 Up, 25 Down)",
+         fontsize = 8)
+```
+
+```{r}
+
+top_up <- res[order(res$log2FoldChange, decreasing = TRUE), ]
+top_down <- res[order(res$log2FoldChange), ]
+
+top_10_up <- rownames(top_up)[1:10]
+top_10_down <- rownames(top_down)[1:10]
+
+top_20_genes <- c(top_10_up, top_10_down)
+
+normalized_counts_top20 <- normalized_counts[top_20_genes, ]
+
+z_scores_top20 <- t(scale(t(normalized_counts_top20)))
+
+external_names <- res$external_gene_name[match(rownames(z_scores_top20), rownames(res))]
+
+rownames(z_scores_top20) <- external_names
+
+column_annotation <- data.frame(Group = group)
+rownames(column_annotation) <- colnames(z_scores_top20)
+
+
+
+pheatmap(z_scores_top20,
+         annotation_col = column_annotation,
+         show_rownames = TRUE,
+         cluster_rows = TRUE,  
+         cluster_cols = TRUE,   
+         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(100),
+         main = "Heatmap Filtered",
+         fontsize = 8)
+```
+
+### Gene Ontology (GO)
+
+```{r}
+
+
+gene_id <- rownames(res_df)
+is_de <- abs(res_df$log2FoldChange) >1 & res_df$padj <0.05 
+
+gene_list <- as.integer(is_de)
+names(gene_list) <- gene_id
+
+de_genes <- names(gene_list)[gene_list == 1]
+
+run_topGO_analysis <- function(ontology) {
+  go_data <- new("topGOdata",
+                 ontology = ontology,
+                 allGenes = gene_list,
+                 geneSel = function(x) x == 1,
+                 annot = annFUN.org,
+                 mapping = "org.Dr.eg.db",
+                 ID = "ensembl")
+  
+  result_fisher <- runTest(go_data, algorithm = "classic", statistic = "fisher")
+  
+  table_res <- GenTable(go_data, fisher = result_fisher, topNodes = 100)
+  table_res$Ontology <- ontology
+  
+  return(table_res)
+}
+
+
+bp_results <- run_topGO_analysis("BP")
+mf_results <- run_topGO_analysis("MF")
+cc_results <- run_topGO_analysis("CC")
+
+
+all_results <- rbind(bp_results, mf_results, cc_results)
+
+
+all_results <- all_results %>%
+  arrange(fisher) %>%
+  mutate(FDR = p.adjust(fisher, method = "BH"))
+
+
+print(head(all_results, 20))
+
+term <- all_results$Term
+
+term_df <- as.data.frame(term)
+```
+
+```{r}
+
+
+deg_results <- res_df$log2FoldChange
+names(deg_results) <- rownames(res_df)
+
+gene_list_sorted <- sort(deg_results, decreasing = TRUE)
+
+
+entrez_ids <- mapIds(org.Dr.eg.db, 
+                     keys = names(gene_list_sorted), 
+                     column = "ENTREZID", 
+                     keytype = "ENSEMBL", 
+                     multiVals = "first")
+
+gene_list_sorted <- gene_list_sorted[!is.na(entrez_ids)]
+entrez_ids <- entrez_ids[!is.na(entrez_ids)]
+names(gene_list_sorted) <- entrez_ids
+
+
+kegg_gsea <- gseKEGG(geneList = gene_list_sorted,
+                     organism = "dre",
+                     keyType = "ncbi-geneid",
+                     minGSSize = 10,
+                     maxGSSize = 500,
+                     pvalueCutoff = 0.1,
+                     pAdjustMethod = "BH")
+
+
+dotplot(kegg_gsea, showCategory = 15, title = "GSEA of KEGG Pathways")
+
+upregulated <- kegg_gsea[kegg_gsea$NES > 0, ]
+downregulated <- kegg_gsea[kegg_gsea$NES < 0, ]
+
+
+
+
+# Para crear un data frame con ID y Description de las vías reguladas al alza
+def_up <- data.frame(ID = upregulated$ID, 
+                     Description = upregulated$Description)
+
+# Si quieres incluir más información, puedes hacer:
+def_up <- data.frame(ID = upregulated$ID, 
+                     Description = upregulated$Description,
+                     NES = upregulated$NES,
+                     pvalue = upregulated$pvalue,
+                     qvalue = upregulated$qvalue)
+
+# Lo mismo para las vías reguladas a la baja
+def_down <- data.frame(ID = downregulated$ID, 
+                       Description = downregulated$Description,
+                       NES = downregulated$NES,
+                       pvalue = downregulated$pvalue,
+                       qvalue = downregulated$qvalue)
+```
+
+## ELOVL GENES
+
+```{r}
+
+
+elovl <- res_df[grep("^ELOVL[0-9]*[a-z]*", res_df$external_gene_name, ignore.case = TRUE),]
+
+```
+
+We have 9 results.
+
+```{r}
+
+id_to_name <- setNames(elovl$external_gene_name, rownames(elovl))
+elovl_genes <- rownames(elovl)
+
+external_names <- res_df$external_gene_name[match(rownames(elovl_counts_log), rownames(res_df))]
+rownames(elovl_counts_log) <- external_names
+
+annotation_col <- data.frame(
+  Group = colData(dds)$group
+)
+rownames(annotation_col) <- colnames(elovl_counts_log)
+
+annotation_row <- data.frame(
+  log2FoldChange = res[elovl_genes, "log2FoldChange"]
+)
+rownames(annotation_row) <- external_names
+
+color_palette <- colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(100)
+
+pheatmap(elovl_counts_log,
+         annotation_col = annotation_col,
+         annotation_row = annotation_row,
+         color = color_palette,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         show_rownames = TRUE,
+         show_colnames = TRUE,
+         main = "Heatmap of ELOVL gene expression (log2 transformed)",
+         fontsize_row = 10,
+         fontsize_col = 10,
+         scale = "none",
+         annotation_colors = list(
+           Group = c(control = "lightblue", treatment = "salmon"),
+           log2FoldChange = colorRampPalette(c("blue", "white", "red"))(100)
+         ))
+
+```
+
+Check first
+
+```{r}
+
+
+elovl_genes <- res_df$external_gene_name[grep("^ELOVL", res_df$external_gene_name, ignore.case = TRUE)]
+
+elovl_entrez <- mapIds(org.Dr.eg.db, 
+                       keys = elovl_genes, 
+                       column = "ENTREZID", 
+                       keytype = "SYMBOL", 
+                       multiVals = "first")
+
+elovl_entrez <- elovl_entrez[!is.na(elovl_entrez)]
+
+ego <- enrichGO(gene = elovl_entrez,
+                OrgDb = org.Dr.eg.db,
+                ont = "ALL",
+                pAdjustMethod = "BH",
+                pvalueCutoff = 0.05,
+                qvalueCutoff = 0.05)
+
+
+
+dotplot(ego, showCategory = 5)
+
+ego_results <- as.data.frame(ego)
+print(head(ego_results))
+
+
+```
+
+### Interactome -in process
+
+```{r}
+
+
+string_db <- STRINGdb$new(version="11.5", species=7955, score_threshold=400)
+
+elovl_genes <- res_df$external_gene_name[grep("^ELOVL", res_df$external_gene_name, ignore.case = TRUE)]
+elovl_mapped <- string_db$map(data.frame(gene=elovl_genes), "gene", removeUnmappedRows = TRUE)
+
+print(elovl_mapped)
+
+elovl_interactions <- string_db$get_interactions(elovl_mapped$STRING_id)
+
+enrichment <- string_db$get_enrichment(elovl_mapped$STRING_id)
+
+head(enrichment)
+
+
+elovl_neighbors <- string_db$get_neighbors(elovl_mapped$STRING_id)
+
+head(elovl_neighbors)
+
+```
+
+```{r}
+library(DESeq2)
+library(WGCNA)
+
+expr_data <- assay(vst(dds, blind=FALSE))
+
+expr_data <- t(expr_data)
+
+traits <- data.frame(group = colData(dds)$group)
+rownames(traits) <- colnames(dds)
+
+
+powers <- c(c(1:10), seq(from = 12, to = 20, by = 2))
+sft <- pickSoftThreshold(expr_data, powerVector = powers, verbose = 5)
+
+
+png("scale_independence_plot.png", width = 800, height = 600)
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+     main = paste("Scale independence"))
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels=powers,cex=0.9,col="red")
+abline(h=0.90,col="red")
+dev.off()
+
+
+print(sft$fitIndices)
+
+
+chosen_power <- 6 
+
+
+net <- blockwiseModules(expr_data, power = chosen_power,
+                        TOMType = "unsigned", minModuleSize = 30,
+                        reassignThreshold = 0, mergeCutHeight = 0.25,
+                        numericLabels = TRUE, pamRespectsDendro = FALSE,
+                        saveTOMs = TRUE, saveTOMFileBase = "TOM",
+                        verbose = 3)
+
+moduleColors <- labels2colors(net$colors)
+
+png("module_dendrogram.png", width = 1200, height = 600)
+plotDendroAndColors(net$dendrograms[[1]], moduleColors[net$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+dev.off()
+
+elovl_genes <- rownames(res_df)[grep("^ELOVL", res_df$external_gene_name, ignore.case = TRUE)]
+elovl_module <- moduleColors[match(elovl_genes, colnames(expr_data))]
+
+print(data.frame(Gene = elovl_genes, Module = elovl_module))
+
+for (gene in elovl_genes) {
+  gene_index <- which(colnames(expr_data) == gene)
+  if (length(gene_index) > 0) {
+    module_color <- moduleColors[gene_index]
+    module_genes <- colnames(expr_data)[moduleColors == module_color]
+    
+    gene_cors <- cor(expr_data[, gene], expr_data[, module_genes])
+    
+    top_cors <- sort(gene_cors, decreasing = TRUE)[1:11]  
+    print(paste("Top 10 genes correlacionados con", gene, ":"))
+    print(top_cors[-1])  
+    cat("\n")
+  }
+}
+```
