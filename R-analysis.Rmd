@@ -406,18 +406,15 @@ downregulated <- kegg_gsea[kegg_gsea$NES < 0, ]
 
 
 
-# Para crear un data frame con ID y Description de las vías reguladas al alza
 def_up <- data.frame(ID = upregulated$ID, 
                      Description = upregulated$Description)
 
-# Si quieres incluir más información, puedes hacer:
 def_up <- data.frame(ID = upregulated$ID, 
                      Description = upregulated$Description,
                      NES = upregulated$NES,
                      pvalue = upregulated$pvalue,
                      qvalue = upregulated$qvalue)
 
-# Lo mismo para las vías reguladas a la baja
 def_down <- data.frame(ID = downregulated$ID, 
                        Description = downregulated$Description,
                        NES = downregulated$NES,
